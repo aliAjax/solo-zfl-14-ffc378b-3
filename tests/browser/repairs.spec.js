@@ -246,3 +246,86 @@ test("费用类型、预算和本月花费刷新后保持一致", async ({ page 
   expect(done.costType).toBe("labor");
   expect(done.completedAt.startsWith(new Date().toISOString().slice(0, 7))).toBe(true);
 });
+
+test("旧数据中无完成日期的已完成事项计入本月已花费，超限提醒与刷新持久化正确", async ({ page }) => {
+  await page.goto("/", { waitUntil: "networkidle" });
+  const lastMonthDate = dateOffset(-40);
+  const todayDate = dateOffset(0);
+  // 写入预算功能上线前的旧格式数据：已完成但没有 completedAt / costType
+  await page.evaluate(
+    ({ key, lastMonthDate, todayDate }) => {
+      localStorage.setItem(
+        key,
+        JSON.stringify({
+          filter: "all",
+          repairs: [
+            {
+              id: "legacy-done",
+              location: "阁楼",
+              title: "历史已完成维修",
+              priority: "medium",
+              cost: 300,
+              status: "done",
+              photo: "",
+              note: "旧数据没有 completedAt",
+              dueDate: ""
+            },
+            {
+              id: "legacy-last-month",
+              location: "阳台",
+              title: "上月完工的旧事项",
+              priority: "low",
+              cost: 100,
+              status: "done",
+              photo: "",
+              note: "",
+              dueDate: lastMonthDate
+            },
+            {
+              id: "legacy-this-month",
+              location: "玄关",
+              title: "本月完工的旧事项",
+              priority: "low",
+              cost: 50,
+              status: "done",
+              photo: "",
+              note: "",
+              dueDate: todayDate
+            }
+          ]
+        })
+      );
+    },
+    { key: STORAGE_KEY, lastMonthDate, todayDate }
+  );
+  await page.reload();
+
+  const budgetCard = page.locator(".stat.budget");
+  // 本月已花费：无日期(300，视为本月) + 本月计划完成(50)；上月完工的 100 不计入
+  await expect(budgetCard.locator(".budget-spent")).toContainText("¥350");
+
+  // 超出预算时明显提醒
+  await setBudget(page, 300);
+  await expect(budgetCard).toHaveClass(/over/);
+  await expect(budgetCard.locator(".budget-alert")).toHaveText(/已超出预算 ¥50/);
+
+  // 迁移为旧事项补全完成日期与默认费用类型
+  for (const title of ["历史已完成维修", "上月完工的旧事项", "本月完工的旧事项"]) {
+    await expect(page.locator(".repair", { hasText: title }).locator(".done-date")).toBeVisible();
+    await expect(page.locator(".repair", { hasText: title }).locator(".cost-type")).toHaveText("材料费");
+  }
+
+  // 刷新后花费、超限状态与迁移结果保持一致
+  await page.reload();
+  await expect(budgetCard.locator(".budget-spent")).toContainText("¥350");
+  await expect(budgetCard).toHaveClass(/over/);
+  await expect(page.getByLabel("本月预算上限")).toHaveValue("300");
+
+  const saved = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STORAGE_KEY);
+  expect(saved.monthlyBudget).toBe(300);
+  const byId = Object.fromEntries(saved.repairs.map((r) => [r.id, r]));
+  expect(byId["legacy-done"].costType).toBe("material");
+  expect(byId["legacy-done"].completedAt).toBe(todayDate);
+  expect(byId["legacy-last-month"].completedAt).toBe(lastMonthDate);
+  expect(byId["legacy-this-month"].completedAt).toBe(todayDate);
+});

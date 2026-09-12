@@ -26,14 +26,23 @@ const app = document.querySelector("#app");
 function loadState() {
   const saved = localStorage.getItem(STORAGE_KEY);
   if (saved) {
-    const state = JSON.parse(saved);
-    state.monthlyBudget = Number(state.monthlyBudget || 0);
-    state.repairs.forEach((repair) => {
+    const raw = JSON.parse(saved);
+    const migrated = raw;
+    const parsedBudget = Number(raw.monthlyBudget || 0);
+    let changed = raw.monthlyBudget !== parsedBudget;
+    migrated.monthlyBudget = parsedBudget;
+    migrated.repairs.forEach((repair) => {
       repair.costType = repair.costType || "material";
       repair.completedAt = repair.completedAt || "";
       repair.dueDate = repair.dueDate || "";
+      // 预算功能上线前的已完成事项没有完成日期，按计划日期或当前日期补全
+      if (repair.status === "done" && !repair.completedAt) {
+        repair.completedAt = inferCompletedAt(repair);
+        changed = true;
+      }
     });
-    return state;
+    if (changed) localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+    return migrated;
   }
   return {
     filter: "all",
@@ -269,10 +278,23 @@ function currentMonthText() {
   return todayText().slice(0, 7);
 }
 
+function inferCompletedAt(repair) {
+  // 有不晚于今天的计划日期时，认为在计划当天完成；否则按本月完成处理
+  if (repair.dueDate && repair.dueDate <= todayText()) {
+    return repair.dueDate;
+  }
+  return todayText();
+}
+
 function monthlySpending(repairs) {
   const month = currentMonthText();
   return repairs
-    .filter((repair) => repair.status === "done" && (repair.completedAt || "").startsWith(month))
+    .filter((repair) => {
+      if (repair.status !== "done") return false;
+      // 无完成日期的旧数据按本月完成兜底，避免漏算预算
+      if (!repair.completedAt) return true;
+      return repair.completedAt.startsWith(month);
+    })
     .reduce((total, repair) => total + Number(repair.cost || 0), 0);
 }
 
