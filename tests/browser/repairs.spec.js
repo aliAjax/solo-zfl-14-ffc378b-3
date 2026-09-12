@@ -418,3 +418,154 @@ test("归档状态与归档视图刷新后保持，localStorage 与其他流程�
   expect(saved2.view).toBe("active");
   expect(saved2.repairs.find((r) => r.title === "刷新后仍归档").archived).toBe(true);
 });
+
+test("导出 JSON 包含全部事项、预算和归档状态", async ({ page }) => {
+  await setBudget(page, 880);
+  await addRepair(page, { location: "露台", title: "导出测试-待办", cost: "60", costType: "other", dueDate: dateOffset(5) });
+  await addRepair(page, { location: "储物间", title: "导出测试-已归档", cost: "220", costType: "labor", status: "done" });
+  await page.locator(".repair", { hasText: "导出测试-已归档" }).getByRole("button", { name: "归档" }).click();
+  await expect(page.getByText("导出测试-已归档")).toHaveCount(0);
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出 JSON" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^home-repairs-\d{4}-\d{2}-\d{2}\.json$/);
+
+  const content = JSON.parse(await download.createReadStream().then((stream) => new Promise((resolve, reject) => {
+    let data = "";
+    stream.on("data", (chunk) => (data += chunk));
+    stream.on("end", () => resolve(data));
+    stream.on("error", reject);
+  })));
+
+  expect(content.app).toBe("zfl-14-home-repair");
+  expect(typeof content.version).toBe("number");
+  expect(content.exportedAt).toContain("T");
+  expect(content.data.monthlyBudget).toBe(880);
+  expect(Array.isArray(content.data.repairs)).toBe(true);
+
+  const titles = content.data.repairs.map((r) => r.title);
+  expect(titles).toContain("导出测试-待办");
+  expect(titles).toContain("导出测试-已归档");
+  expect(titles).toContain("水槽下方渗水");
+
+  const archived = content.data.repairs.find((r) => r.title === "导出测试-已归档");
+  expect(archived.archived).toBe(true);
+  expect(archived.status).toBe("done");
+  expect(archived.costType).toBe("labor");
+  const pending = content.data.repairs.find((r) => r.title === "导出测试-待办");
+  expect(pending.archived).toBe(false);
+  expect(pending.dueDate).toBe(dateOffset(5));
+
+  await expect(page.locator(".notice.success")).toContainText("已导出");
+});
+
+test("导入 JSON 可恢复全部数据，归档和预算生效，刷新后不变", async ({ page }) => {
+  const backup = {
+    app: "zfl-14-home-repair",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    data: {
+      filter: "all",
+      view: "active",
+      monthlyBudget: 700,
+      repairs: [
+        {
+          id: "imp-1",
+          location: "地下室",
+          title: "导入的待办事项",
+          priority: "high",
+          cost: 50,
+          costType: "material",
+          status: "todo",
+          photo: "",
+          note: "来自备份",
+          dueDate: "",
+          completedAt: "",
+          archived: false
+        },
+        {
+          id: "imp-2",
+          location: "车库",
+          title: "导入的已归档事项",
+          priority: "low",
+          cost: 300,
+          costType: "labor",
+          status: "done",
+          photo: "",
+          note: "",
+          dueDate: "",
+          completedAt: dateOffset(0),
+          archived: true
+        }
+      ]
+    }
+  };
+
+  await page.locator("#import-file").setInputFiles({
+    name: "home-repairs.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(backup))
+  });
+
+  await expect(page.locator(".notice.success")).toContainText("导入成功");
+  await expect(page.getByText("导入的待办事项")).toBeVisible();
+  await expect(page.getByText("导入的已归档事项")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^归档事项（1）$/ })).toBeVisible();
+  await expect(page.getByLabel("本月预算上限")).toHaveValue("700");
+  await expect(page.locator(".budget-spent")).toContainText("¥300");
+
+  // 归档视图可看到恢复的归档事项
+  await page.getByRole("button", { name: /归档事项/ }).click();
+  await expect(page.getByText("导入的已归档事项")).toBeVisible();
+
+  // 刷新后数据不变
+  await page.reload();
+  await expect(page.getByText("导入的已归档事项")).toBeVisible();
+  await expect(page.getByLabel("本月预算上限")).toHaveValue("700");
+  const saved = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STORAGE_KEY);
+  expect(saved.repairs.map((r) => r.id).sort()).toEqual(["imp-1", "imp-2"]);
+  expect(saved.monthlyBudget).toBe(700);
+  expect(saved.repairs.find((r) => r.id === "imp-2").archived).toBe(true);
+});
+
+test("导入格式错误时提示且不改动现有数据", async ({ page }) => {
+  await addRepair(page, { location: "客厅", title: "原有事项", cost: "70" });
+  const repairCountBefore = await page.locator(".repair").count();
+  const budgetBefore = await page.getByLabel("本月预算上限").inputValue();
+
+  const importWith = async (content) => {
+            await page.locator("#import-file").setInputFiles({
+              name: "bad.json",
+              mimeType: "application/json",
+              buffer: Buffer.from(content)
+            });
+          };
+
+  // 非 JSON
+  await importWith("not a json file {{{");
+  await expect(page.locator(".notice.error")).toContainText("不是有效的 JSON");
+
+  // 缺少 repairs 列表
+  await importWith(JSON.stringify({ app: "zfl-14-home-repair", version: 1, data: { repairs: "nope" } }));
+  await expect(page.locator(".notice.error")).toContainText("repairs");
+
+  // 必填字段缺失
+  await importWith(JSON.stringify({ repairs: [{ id: "x", status: "todo" }] }));
+  await expect(page.locator(".notice.error")).toContainText("缺少");
+
+  // 状态非法
+  await importWith(JSON.stringify({ repairs: [{ id: "x", location: "a", title: "b", status: "wat", priority: "low", cost: 1 }] }));
+  await expect(page.locator(".notice.error")).toContainText("状态无效");
+
+  // 日期格式非法
+  await importWith(JSON.stringify({ repairs: [{ id: "x", location: "a", title: "b", status: "todo", priority: "low", cost: 1, dueDate: "2026/9/1" }] }));
+  await expect(page.locator(".notice.error")).toContainText("日期格式无效");
+
+  // 数据保持不变
+  await expect(page.locator(".repair")).toHaveCount(repairCountBefore);
+  await expect(page.getByText("原有事项")).toBeVisible();
+  await expect(page.getByLabel("本月预算上限")).toHaveValue(budgetBefore);
+  const saved = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STORAGE_KEY);
+  expect(saved.repairs.some((r) => r.title === "原有事项")).toBe(true);
+});

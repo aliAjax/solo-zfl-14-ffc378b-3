@@ -253,6 +253,46 @@ textarea {
   color: #9c2d1e;
 }
 
+.backup {
+  border-top: 1px solid #dde1d9;
+  margin-top: 6px;
+  padding-top: 14px;
+}
+
+.backup-hint {
+  color: #687166;
+  font-size: 0.8rem;
+  margin: 0 0 10px;
+}
+
+.backup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.backup-actions .ghost {
+  padding: 8px 12px;
+}
+
+.notice {
+  border-radius: 6px;
+  font-size: 0.88rem;
+  font-weight: 800;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+}
+
+.notice.success {
+  background: #dcebd6;
+  color: #2f5a2b;
+}
+
+.notice.error {
+  background: #f6d8d2;
+  color: #9c2d1e;
+}
+
 .repair.archived {
   background: #f7f7f4;
   opacity: 0.92;

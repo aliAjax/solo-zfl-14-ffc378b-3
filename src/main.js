@@ -1,6 +1,8 @@
 import "./styles.css";
 
 const STORAGE_KEY = "zfl-14-repairs";
+const EXPORT_APP = "zfl-14-home-repair";
+const EXPORT_VERSION = 1;
 const statuses = {
   all: "全部",
   todo: "待处理",
@@ -21,6 +23,7 @@ const costTypes = {
 };
 
 let state = loadState();
+let notice = null;
 const app = document.querySelector("#app");
 
 function loadState() {
@@ -76,7 +79,125 @@ function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-function render() {
+function showNotice(type, message) {
+  notice = { type, message };
+}
+
+function exportData() {
+  const payload = {
+    app: EXPORT_APP,
+    version: EXPORT_VERSION,
+    exportedAt: new Date().toISOString(),
+    data: {
+      filter: state.filter,
+      view: state.view,
+      monthlyBudget: Number(state.monthlyBudget || 0),
+      repairs: state.repairs
+    }
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `home-repairs-${todayText()}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  showNotice("success", `已导出 ${state.repairs.length} 条事项`);
+  render(true);
+}
+
+async function importData(file) {
+  try {
+    const text = await file.text();
+    const imported = validateImport(text);
+    state = imported;
+    saveState();
+    showNotice("success", `导入成功，已恢复 ${state.repairs.length} 条事项`);
+  } catch (error) {
+    showNotice("error", `导入失败：${error.message}`);
+  }
+  render(true);
+}
+
+function validateImport(text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error("文件不是有效的 JSON");
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("文件格式不正确");
+  }
+
+  // 兼容直接导出的旧版纯状态文件
+  const source = parsed.app === EXPORT_APP ? parsed.data : parsed;
+  if (!source || typeof source !== "object" || !Array.isArray(source.repairs)) {
+    throw new Error("缺少 repairs 事项列表");
+  }
+
+  const validStatuses = ["todo", "doing", "done"];
+  const validPriorities = Object.keys(priorities);
+  const validCostTypes = Object.keys(costTypes);
+  const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+
+  const repairs = source.repairs.map((repair, index) => {
+    const label = `第 ${index + 1} 条事项`;
+    if (!repair || typeof repair !== "object") throw new Error(`${label}格式不正确`);
+    if (!["string", "number"].includes(typeof repair.id) || !String(repair.id).trim()) {
+      throw new Error(`${label}缺少 id`);
+    }
+    for (const field of ["location", "title"]) {
+      if (typeof repair[field] !== "string" || !repair[field].trim()) {
+        throw new Error(`${label}缺少${field === "location" ? "位置" : "问题描述"}`);
+      }
+    }
+    if (!validStatuses.includes(repair.status)) throw new Error(`${label}状态无效`);
+    if (!validPriorities.includes(repair.priority)) throw new Error(`${label}优先级无效`);
+    const costType = repair.costType || "material";
+    if (!validCostTypes.includes(costType)) throw new Error(`${label}费用类型无效`);
+    const cost = Number(repair.cost || 0);
+    if (!Number.isFinite(cost) || cost < 0) throw new Error(`${label}费用无效`);
+    for (const field of ["dueDate", "completedAt"]) {
+      if (repair[field] && (typeof repair[field] !== "string" || !datePattern.test(repair[field]))) {
+        throw new Error(`${label}日期格式无效`);
+      }
+    }
+    return {
+      id: String(repair.id),
+      location: repair.location,
+      title: repair.title,
+      priority: repair.priority,
+      cost,
+      costType,
+      status: repair.status,
+      photo: typeof repair.photo === "string" ? repair.photo : "",
+      note: typeof repair.note === "string" ? repair.note : "",
+      dueDate: repair.dueDate || "",
+      completedAt: repair.completedAt || "",
+      archived: Boolean(repair.archived)
+    };
+  });
+
+  const ids = repairs.map((repair) => repair.id);
+  if (new Set(ids).size !== ids.length) throw new Error("事项 id 重复");
+
+  const budget = Number(source.monthlyBudget || 0);
+  if (!Number.isFinite(budget) || budget < 0) throw new Error("预算金额无效");
+
+  return {
+    filter: validStatuses.includes(source.filter) || source.filter === "all" ? source.filter : "all",
+    view: ["active", "archived"].includes(source.view) ? source.view : "active",
+    monthlyBudget: budget,
+    repairs
+  };
+}
+
+function render(keepNotice = false) {
+  if (!keepNotice) notice = null;
   const repairs = visibleRepairs();
   const activeRepairs = state.repairs.filter((repair) => !repair.archived);
   const unfinished = activeRepairs.filter((repair) => repair.status !== "done");
@@ -128,6 +249,16 @@ function render() {
             <label>备注<textarea name="note" placeholder="师傅电话、材料或注意事项"></textarea></label>
             <button class="primary" type="submit">保存事项</button>
           </form>
+
+          <div class="backup">
+            <h2>数据备份</h2>
+            <p class="backup-hint">导出包含全部事项、预算和归档状态的 JSON 文件，可再导入恢复。</p>
+            <div class="backup-actions">
+              <button type="button" class="ghost" id="export-button">导出 JSON</button>
+              <button type="button" class="ghost" id="import-button">导入 JSON</button>
+              <input type="file" id="import-file" accept="application/json,.json" hidden>
+            </div>
+          </div>
         </aside>
 
         <section>
@@ -140,6 +271,7 @@ function render() {
               <button class="seg archive-link" data-view="archived">归档事项${archivedCount ? `（${archivedCount}）` : ""}</button>
             `}
           </div>
+          ${notice ? `<div class="notice ${notice.type}" data-notice>${escapeHtml(notice.message)}</div>` : ""}
           <div class="repairs">
             ${repairs.length ? repairs.map(renderRepair).join("") : `<div class="empty">${state.view === "archived" ? "还没有归档的维修事项" : "当前状态下没有维修事项"}</div>`}
           </div>
@@ -289,6 +421,17 @@ function bindEvents() {
       saveState();
       render();
     });
+  });
+
+  document.querySelector("#export-button").addEventListener("click", exportData);
+
+  const importButton = document.querySelector("#import-button");
+  const importFile = document.querySelector("#import-file");
+  importButton.addEventListener("click", () => importFile.click());
+  importFile.addEventListener("change", () => {
+    const file = importFile.files[0];
+    if (file) importData(file);
+    importFile.value = "";
   });
 }
 
