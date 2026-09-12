@@ -6,9 +6,12 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5114",
     "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0 --port 6114"
+    "preview": "vite preview --host 0.0.0.0 --port 6114",
+    "test:e2e": "playwright test",
+    "test": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "vite": "^6.3.5"
   }
 }

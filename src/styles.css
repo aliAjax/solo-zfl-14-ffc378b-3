@@ -230,6 +230,21 @@ textarea {
   color: #596257;
 }
 
+.due.no-date {
+  background: #f0f0ed;
+  color: #8a9086;
+}
+
+.due.overdue {
+  background: #f6d8d2;
+  color: #9c2d1e;
+}
+
+.repair.overdue {
+  border-color: #c4513a;
+  box-shadow: inset 4px 0 0 #c4513a;
+}
+
 .priority.high {
   background: #f2c5b2;
   color: #813d2a;

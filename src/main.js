@@ -31,7 +31,8 @@ function loadState() {
         cost: 260,
         status: "todo",
         photo: "",
-        note: "先检查软管接口"
+        note: "先检查软管接口",
+        dueDate: ""
       }
     ]
   };
@@ -69,6 +70,7 @@ function render() {
             <label>问题描述<textarea name="title" required placeholder="例如门锁松动"></textarea></label>
             <label>优先级<select name="priority">${renderPriorityOptions("medium")}</select></label>
             <label>预计费用<input name="cost" type="number" min="0" step="1" value="0"></label>
+            <label>计划完成日期<input name="dueDate" type="date"></label>
             <label>处理状态<select name="status">${renderStatusOptions("todo")}</select></label>
             <label>照片链接<input name="photo" type="url" placeholder="可选，粘贴图片地址"></label>
             <label>备注<textarea name="note" placeholder="师傅电话、材料或注意事项"></textarea></label>
@@ -93,7 +95,7 @@ function render() {
 
 function renderRepair(repair) {
   return `
-    <article class="repair">
+    <article class="repair ${isOverdue(repair) ? "overdue" : ""}">
       <div class="photo">${repair.photo ? `<img src="${escapeHtml(repair.photo)}" alt="${escapeHtml(repair.location)}维修照片">` : "未添加照片"}</div>
       <div class="content">
         <div class="row">
@@ -103,6 +105,7 @@ function renderRepair(repair) {
         </div>
         <p>${escapeHtml(repair.title)}</p>
         <div class="row">
+          ${renderDueChip(repair)}
           <span class="chip">预计 ¥${Number(repair.cost || 0)}</span>
           <span class="chip">${escapeHtml(repair.note || "暂无备注")}</span>
         </div>
@@ -138,6 +141,7 @@ function bindEvents() {
       title: data.title.trim(),
       priority: data.priority,
       cost: Number(data.cost || 0),
+      dueDate: data.dueDate || "",
       status: data.status,
       photo: data.photo.trim(),
       note: data.note.trim()
@@ -173,8 +177,61 @@ function bindEvents() {
 }
 
 function filteredRepairs() {
-  if (state.filter === "all") return state.repairs;
-  return state.repairs.filter((repair) => repair.status === state.filter);
+  const list = state.filter === "all" ? state.repairs.slice() : state.repairs.filter((repair) => repair.status === state.filter);
+  return sortRepairs(list);
+}
+
+function sortRepairs(list) {
+  return list
+    .map((repair, index) => ({ repair, index }))
+    .sort((a, b) => {
+      const aDone = a.repair.status === "done";
+      const bDone = b.repair.status === "done";
+      if (aDone !== bDone) return aDone ? 1 : -1;
+
+      const aHas = Boolean(a.repair.dueDate);
+      const bHas = Boolean(b.repair.dueDate);
+      if (aHas !== bHas) return aHas ? -1 : 1;
+      if (aHas && a.repair.dueDate !== b.repair.dueDate) {
+        return a.repair.dueDate < b.repair.dueDate ? -1 : 1;
+      }
+      return a.index - b.index;
+    })
+    .map((entry) => entry.repair);
+}
+
+function daysUntil(dateText) {
+  const [year, month, day] = dateText.split("-").map(Number);
+  const today = new Date();
+  const due = new Date(year, month - 1, day);
+  const midnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  return Math.round((due - midnight) / 86400000);
+}
+
+function isOverdue(repair) {
+  return repair.status !== "done" && Boolean(repair.dueDate) && daysUntil(repair.dueDate) < 0;
+}
+
+function formatDate(dateText) {
+  const [, month, day] = dateText.split("-");
+  return `${Number(month)}月${Number(day)}日`;
+}
+
+function renderDueChip(repair) {
+  if (!repair.dueDate) {
+    return `<span class="chip due no-date">未设定计划日期</span>`;
+  }
+
+  if (repair.status === "done") {
+    return `<span class="chip due">计划 ${formatDate(repair.dueDate)}</span>`;
+  }
+
+  const days = daysUntil(repair.dueDate);
+  let label;
+  if (days < 0) label = `已逾期 ${Math.abs(days)} 天（${formatDate(repair.dueDate)}）`;
+  else if (days === 0) label = `今日到期（${formatDate(repair.dueDate)}）`;
+  else label = `剩余 ${days} 天（${formatDate(repair.dueDate)}）`;
+  return `<span class="chip due ${days < 0 ? "overdue" : ""}">${label}</span>`;
 }
 
 function escapeHtml(value) {
