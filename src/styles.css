@@ -238,6 +238,31 @@ textarea {
   color: white;
 }
 
+.archive-link {
+  margin-left: auto;
+}
+
+.view-title {
+  align-self: center;
+  color: #526056;
+  font-weight: 800;
+}
+
+.ghost.danger {
+  background: #f6e3de;
+  color: #9c2d1e;
+}
+
+.repair.archived {
+  background: #f7f7f4;
+  opacity: 0.92;
+}
+
+.archived-tag {
+  background: #e3e2db;
+  color: #626153;
+}
+
 .repairs {
   display: grid;
   gap: 12px;

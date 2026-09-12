@@ -329,3 +329,92 @@ test("旧数据中无完成日期的已完成事项计入本月已花费，超�
   expect(byId["legacy-last-month"].completedAt).toBe(lastMonthDate);
   expect(byId["legacy-this-month"].completedAt).toBe(todayDate);
 });
+
+test("已完成事项可归档，归档后从所有状态列表隐藏，归档入口显示数量", async ({ page }) => {
+  await addRepair(page, { location: "次卧", title: "已完成待归档", cost: "180", costType: "labor", status: "done" });
+  await addRepair(page, { location: "阳台", title: "未完成事项", cost: "90" });
+
+  // 未完成事项没有归档按钮
+  const pendingCard = page.locator(".repair", { hasText: "未完成事项" });
+  await expect(pendingCard.getByRole("button", { name: "归档" })).toHaveCount(0);
+
+  // 归档已完成事项
+  const doneCard = page.locator(".repair", { hasText: "已完成待归档" });
+  await doneCard.getByRole("button", { name: "归档" }).click();
+  await expect(page.getByText("已完成待归档")).toHaveCount(0);
+
+  // 入口显示归档数量，已完成筛选下也不可见
+  await expect(page.getByRole("button", { name: /^归档事项（1）$/ })).toBeVisible();
+  await page.getByRole("button", { name: "已完成" }).click();
+  await expect(page.getByText("已完成待归档")).toHaveCount(0);
+  await expect(page.locator(".empty")).toBeVisible();
+  await page.getByRole("button", { name: "全部" }).click();
+  await expect(page.getByText("已完成待归档")).toHaveCount(0);
+
+  // 未完成统计不受影响，且已花费（归档的已完成事项）仍计入预算
+  await expect(page.locator(".stat", { hasText: "未完成" }).locator("strong")).toHaveText("2");
+  await expect(page.locator(".budget-spent")).toContainText("¥180");
+});
+
+test("归档视图可查看归档事项并恢复，统计与预算不受影响", async ({ page }) => {
+  await addRepair(page, { location: "次卧", title: "归档项A", cost: "160", status: "done" });
+  await addRepair(page, { location: "书房", title: "归档项B", cost: "240", costType: "other", status: "done" });
+
+  for (const title of ["归档项A", "归档项B"]) {
+    await page.locator(".repair", { hasText: title }).getByRole("button", { name: "归档" }).click();
+  }
+  await expect(page.getByText("归档项A")).toHaveCount(0);
+  await expect(page.getByText("归档项B")).toHaveCount(0);
+
+  // 归档视图列出全部归档事项
+  await page.getByRole("button", { name: /归档事项/ }).click();
+  await expect(page).toHaveURL(/.*/);
+  await expect(page.locator(".repair h3")).toHaveText(["书房", "次卧"]);
+  for (const title of ["归档项A", "归档项B"]) {
+    await expect(page.locator(".repair", { hasText: title }).getByRole("button", { name: "恢复" })).toBeVisible();
+  }
+
+  // 恢复一条，返回默认列表后可见，另一条仍归档
+  await page.locator(".repair", { hasText: "归档项A" }).getByRole("button", { name: "恢复" }).click();
+  await expect(page.locator(".repair h3")).toHaveText(["书房"]);
+  await page.getByRole("button", { name: "返回事项列表" }).click();
+  await expect(page.getByText("归档项A")).toBeVisible();
+  await expect(page.getByText("归档项B")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^归档事项（1）$/ })).toBeVisible();
+
+  // 本月花费仍包含已归档的已完成事项，预算超限提醒正常
+  await setBudget(page, 300);
+  await expect(page.locator(".stat.budget")).toHaveClass(/over/);
+  await expect(page.locator(".budget-alert")).toHaveText(/已超出预算 ¥100/);
+});
+
+test("归档状态与归档视图刷新后保持，localStorage 与其他流程一致", async ({ page }) => {
+  await addRepair(page, { location: "阁楼", title: "刷新后仍归档", cost: "120", dueDate: dateOffset(-5), status: "done" });
+  await page.locator(".repair", { hasText: "刷新后仍归档" }).getByRole("button", { name: "归档" }).click();
+  await page.getByRole("button", { name: /归档事项/ }).click();
+  await expect(page.locator(".repair", { hasText: "刷新后仍归档" })).toBeVisible();
+
+  // 刷新后仍停留在归档视图，归档事项仍在
+  await page.reload();
+  await expect(page.getByRole("button", { name: "返回事项列表" })).toBeVisible();
+  await expect(page.locator(".repair", { hasText: "刷新后仍归档" })).toBeVisible();
+
+  const saved = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STORAGE_KEY);
+  expect(saved.view).toBe("archived");
+  const archived = saved.repairs.find((r) => r.title === "刷新后仍归档");
+  expect(archived.archived).toBe(true);
+  expect(archived.status).toBe("done");
+
+  // 返回默认列表，归档事项隐藏；计划日期排序逻辑对可见事项照常工作
+  await page.getByRole("button", { name: "返回事项列表" }).click();
+  await expect(page.getByText("刷新后仍归档")).toHaveCount(0);
+  await addRepair(page, { location: "玄关", title: "明天到期", dueDate: dateOffset(1) });
+  await expect(page.locator(".repair h3").first()).toHaveText("玄关");
+
+  // 再次刷新后归档仍生效
+  await page.reload();
+  await expect(page.getByText("刷新后仍归档")).toHaveCount(0);
+  const saved2 = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STORAGE_KEY);
+  expect(saved2.view).toBe("active");
+  expect(saved2.repairs.find((r) => r.title === "刷新后仍归档").archived).toBe(true);
+});

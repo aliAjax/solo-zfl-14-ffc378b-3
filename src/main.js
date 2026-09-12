@@ -31,10 +31,15 @@ function loadState() {
     const parsedBudget = Number(raw.monthlyBudget || 0);
     let changed = raw.monthlyBudget !== parsedBudget;
     migrated.monthlyBudget = parsedBudget;
+    if (!["active", "archived"].includes(raw.view)) {
+      migrated.view = "active";
+      changed = true;
+    }
     migrated.repairs.forEach((repair) => {
       repair.costType = repair.costType || "material";
       repair.completedAt = repair.completedAt || "";
       repair.dueDate = repair.dueDate || "";
+      repair.archived = Boolean(repair.archived);
       // 预算功能上线前的已完成事项没有完成日期，按计划日期或当前日期补全
       if (repair.status === "done" && !repair.completedAt) {
         repair.completedAt = inferCompletedAt(repair);
@@ -46,6 +51,7 @@ function loadState() {
   }
   return {
     filter: "all",
+    view: "active",
     monthlyBudget: 0,
     repairs: [
       {
@@ -59,7 +65,8 @@ function loadState() {
         photo: "",
         note: "先检查软管接口",
         dueDate: "",
-        completedAt: ""
+        completedAt: "",
+        archived: false
       }
     ]
   };
@@ -70,10 +77,12 @@ function saveState() {
 }
 
 function render() {
-  const repairs = filteredRepairs();
-  const unfinished = state.repairs.filter((repair) => repair.status !== "done");
+  const repairs = visibleRepairs();
+  const activeRepairs = state.repairs.filter((repair) => !repair.archived);
+  const unfinished = activeRepairs.filter((repair) => repair.status !== "done");
   const totalCost = unfinished.reduce((total, repair) => total + Number(repair.cost || 0), 0);
-  const doing = state.repairs.filter((repair) => repair.status === "doing").length;
+  const doing = activeRepairs.filter((repair) => repair.status === "doing").length;
+  const archivedCount = state.repairs.filter((repair) => repair.archived).length;
   const monthSpent = monthlySpending(state.repairs);
   const budget = Number(state.monthlyBudget || 0);
   const overBudget = budget > 0 && monthSpent > budget;
@@ -123,10 +132,16 @@ function render() {
 
         <section>
           <div class="toolbar">
-            ${Object.entries(statuses).map(([value, label]) => `<button class="seg ${state.filter === value ? "active" : ""}" data-filter="${value}">${label}</button>`).join("")}
+            ${state.view === "archived" ? `
+              <button class="seg" data-view="active">← 返回事项列表</button>
+              <span class="view-title">归档事项（${archivedCount}）</span>
+            ` : `
+              ${Object.entries(statuses).map(([value, label]) => `<button class="seg ${state.filter === value ? "active" : ""}" data-filter="${value}">${label}</button>`).join("")}
+              <button class="seg archive-link" data-view="archived">归档事项${archivedCount ? `（${archivedCount}）` : ""}</button>
+            `}
           </div>
           <div class="repairs">
-            ${repairs.length ? repairs.map(renderRepair).join("") : `<div class="empty">当前状态下没有维修事项</div>`}
+            ${repairs.length ? repairs.map(renderRepair).join("") : `<div class="empty">${state.view === "archived" ? "还没有归档的维修事项" : "当前状态下没有维修事项"}</div>`}
           </div>
         </section>
       </section>
@@ -138,7 +153,7 @@ function render() {
 
 function renderRepair(repair) {
   return `
-    <article class="repair ${isOverdue(repair) ? "overdue" : ""}">
+    <article class="repair ${isOverdue(repair) ? "overdue" : ""} ${repair.archived ? "archived" : ""}">
       <div class="photo">${repair.photo ? `<img src="${escapeHtml(repair.photo)}" alt="${escapeHtml(repair.location)}维修照片">` : "未添加照片"}</div>
       <div class="content">
         <div class="row">
@@ -155,8 +170,14 @@ function renderRepair(repair) {
           <span class="chip">${escapeHtml(repair.note || "暂无备注")}</span>
         </div>
         <div class="actions">
-          <select data-status="${repair.id}">${renderStatusOptions(repair.status)}</select>
-          <button class="ghost" data-delete="${repair.id}">删除</button>
+          ${repair.archived ? `
+            <button class="ghost" data-restore="${repair.id}">恢复</button>
+            <button class="ghost danger" data-delete="${repair.id}">删除</button>
+          ` : `
+            <select data-status="${repair.id}">${renderStatusOptions(repair.status)}</select>
+            ${repair.status === "done" ? `<button class="ghost" data-archive="${repair.id}">归档</button>` : ""}
+            <button class="ghost danger" data-delete="${repair.id}">删除</button>
+          `}
         </div>
       </div>
     </article>
@@ -197,7 +218,8 @@ function bindEvents() {
       status: data.status,
       completedAt: data.status === "done" ? todayText() : "",
       photo: data.photo.trim(),
-      note: data.note.trim()
+      note: data.note.trim(),
+      archived: false
     });
     saveState();
     render();
@@ -212,9 +234,36 @@ function bindEvents() {
     document.querySelector("#budget-input")?.focus();
   });
 
+  document.querySelectorAll("[data-view]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.view = button.dataset.view;
+      saveState();
+      render();
+    });
+  });
+
   document.querySelectorAll("[data-filter]").forEach((button) => {
     button.addEventListener("click", () => {
       state.filter = button.dataset.filter;
+      state.view = "active";
+      saveState();
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-archive]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const repair = state.repairs.find((item) => item.id === button.dataset.archive);
+      if (repair && repair.status === "done") repair.archived = true;
+      saveState();
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-restore]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const repair = state.repairs.find((item) => item.id === button.dataset.restore);
+      if (repair) repair.archived = false;
       saveState();
       render();
     });
@@ -243,8 +292,13 @@ function bindEvents() {
   });
 }
 
-function filteredRepairs() {
-  const list = state.filter === "all" ? state.repairs.slice() : state.repairs.filter((repair) => repair.status === state.filter);
+function visibleRepairs() {
+  if (state.view === "archived") {
+    return sortRepairs(state.repairs.filter((repair) => repair.archived));
+  }
+  const list = state.filter === "all"
+    ? state.repairs.filter((repair) => !repair.archived)
+    : state.repairs.filter((repair) => !repair.archived && repair.status === state.filter);
   return sortRepairs(list);
 }
 
