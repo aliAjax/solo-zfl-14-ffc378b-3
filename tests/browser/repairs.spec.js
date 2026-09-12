@@ -16,14 +16,20 @@ async function resetStorage(page) {
   await page.reload();
 }
 
-async function addRepair(page, { location, title, cost = "0", dueDate = "", status = "todo" }) {
+async function addRepair(page, { location, title, cost = "0", costType = "", dueDate = "", status = "todo" }) {
   await page.getByLabel("位置").fill(location);
   await page.getByLabel("问题描述").fill(title);
   await page.getByLabel("预计费用").fill(cost);
+  if (costType) await page.getByLabel("费用类型").selectOption(costType);
   if (dueDate) await page.getByLabel("计划完成日期").fill(dueDate);
   await page.getByLabel("处理状态").selectOption(status);
   await page.getByRole("button", { name: "保存事项" }).click();
   await expect(page.getByText(title)).toBeVisible();
+}
+
+async function setBudget(page, amount) {
+  await page.getByLabel("本月预算上限").fill(String(amount));
+  await page.getByRole("button", { name: "设置" }).click();
 }
 
 test.beforeEach(async ({ page }) => {
@@ -150,4 +156,93 @@ test("原有状态筛选、删除和费用统计不受影响", async ({ page }) 
   await page.locator(".repair", { hasText: "处理中项" }).getByRole("button", { name: "删除" }).click();
   await expect(page.getByText("处理中项")).toHaveCount(0);
   await expect(page.locator(".stat", { hasText: "预计费用" }).locator("strong")).toHaveText("¥360");
+});
+
+test("新增事项时可选择费用类型，卡片与本地存储保持一致", async ({ page }) => {
+  await expect(page.getByLabel("费用类型")).toBeVisible();
+
+  await addRepair(page, { location: "卫生间", title: "购买水龙头", cost: "150", costType: "material" });
+  const materialCard = page.locator(".repair", { hasText: "购买水龙头" });
+  await expect(materialCard.locator(".cost-type")).toHaveText("材料费");
+  await expect(materialCard.locator(".cost-type")).toHaveClass(/material/);
+
+  await addRepair(page, { location: "阳台", title: "请师傅打孔", cost: "300", costType: "labor" });
+  const laborCard = page.locator(".repair", { hasText: "请师傅打孔" });
+  await expect(laborCard.locator(".cost-type")).toHaveText("人工费");
+  await expect(laborCard.locator(".cost-type")).toHaveClass(/labor/);
+
+  await addRepair(page, { location: "客厅", title: "杂项支出", cost: "20", costType: "other" });
+  const otherCard = page.locator(".repair", { hasText: "杂项支出" });
+  await expect(otherCard.locator(".cost-type")).toHaveText("其他");
+
+  // 费用类型随 localStorage 持久化
+  const saved = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STORAGE_KEY);
+  expect(saved.repairs.find((r) => r.title === "购买水龙头").costType).toBe("material");
+  expect(saved.repairs.find((r) => r.title === "请师傅打孔").costType).toBe("labor");
+  expect(saved.repairs.find((r) => r.title === "杂项支出").costType).toBe("other");
+});
+
+test("本月预算：完成事项计入本月已花费，超出预算时明显提示", async ({ page }) => {
+  const budgetCard = page.locator(".stat.budget");
+
+  // 未完成事项不计入本月花费
+  await addRepair(page, { location: "卫生间", title: "待办维修", cost: "100", costType: "material" });
+  await expect(budgetCard.locator(".budget-spent")).toContainText("¥0");
+  await setBudget(page, 500);
+  await expect(budgetCard.locator(".budget-ok")).toHaveText(/还可花费 ¥500/);
+  await expect(budgetCard).not.toHaveClass(/over/);
+
+  // 完成两笔事项（450 + 100 = 550），计入本月花费并超限
+  await addRepair(page, { location: "厨房", title: "换角阀材料费", cost: "450", costType: "material", status: "done" });
+  await expect(budgetCard.locator(".budget-spent")).toContainText("¥450");
+  await expect(budgetCard.locator(".budget-ok")).toHaveText(/还可花费 ¥50/);
+
+  await page.locator(".repair", { hasText: "待办维修" }).getByRole("combobox").selectOption("done");
+  await expect(budgetCard.locator(".budget-spent")).toContainText("¥550");
+  await expect(budgetCard.locator(".budget-alert")).toBeVisible();
+  await expect(budgetCard.locator(".budget-alert")).toHaveText(/已超出预算 ¥50/);
+  await expect(budgetCard).toHaveClass(/over/);
+
+  // 完成的事项卡片显示完成日期
+  const doneCard = page.locator(".repair", { hasText: "待办维修" });
+  await expect(doneCard.locator(".done-date")).toBeVisible();
+
+  // 提高预算后解除超限提示
+  await setBudget(page, 600);
+  await expect(budgetCard).not.toHaveClass(/over/);
+  await expect(budgetCard.locator(".budget-alert")).toHaveCount(0);
+  await expect(budgetCard.locator(".budget-ok")).toHaveText(/还可花费 ¥50/);
+});
+
+test("费用类型、预算和本月花费刷新后保持一致", async ({ page }) => {
+  await addRepair(page, { location: "厨房", title: "本月完工维修", cost: "260", costType: "labor", status: "done" });
+  await addRepair(page, { location: "书房", title: "未完工维修", cost: "80", costType: "other" });
+  await setBudget(page, 200);
+
+  await expect(page.locator(".stat.budget")).toHaveClass(/over/);
+  const spentBefore = await page.locator(".budget-spent").textContent();
+  const alertBefore = await page.locator(".budget-alert").textContent();
+  const budgetValueBefore = await page.getByLabel("本月预算上限").inputValue();
+
+  await page.reload();
+  await expect(page.getByText("本月完工维修")).toBeVisible();
+
+  // 预算上限、本月花费、超限状态保持
+  await expect(page.getByLabel("本月预算上限")).toHaveValue(budgetValueBefore);
+  await expect(page.locator(".budget-spent")).toHaveText(spentBefore);
+  await expect(page.locator(".budget-alert")).toHaveText(alertBefore);
+  await expect(page.locator(".stat.budget")).toHaveClass(/over/);
+
+  // 费用类型与完成日期保持
+  const doneCard = page.locator(".repair", { hasText: "本月完工维修" });
+  await expect(doneCard.locator(".cost-type")).toHaveText("人工费");
+  await expect(doneCard.locator(".done-date")).toBeVisible();
+  const pendingCard = page.locator(".repair", { hasText: "未完工维修" });
+  await expect(pendingCard.locator(".cost-type")).toHaveText("其他");
+
+  const saved = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STORAGE_KEY);
+  expect(saved.monthlyBudget).toBe(200);
+  const done = saved.repairs.find((r) => r.title === "本月完工维修");
+  expect(done.costType).toBe("labor");
+  expect(done.completedAt.startsWith(new Date().toISOString().slice(0, 7))).toBe(true);
 });

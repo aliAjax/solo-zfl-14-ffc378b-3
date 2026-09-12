@@ -14,14 +14,30 @@ const priorities = {
   low: "低优先级"
 };
 
+const costTypes = {
+  material: "材料费",
+  labor: "人工费",
+  other: "其他"
+};
+
 let state = loadState();
 const app = document.querySelector("#app");
 
 function loadState() {
   const saved = localStorage.getItem(STORAGE_KEY);
-  if (saved) return JSON.parse(saved);
+  if (saved) {
+    const state = JSON.parse(saved);
+    state.monthlyBudget = Number(state.monthlyBudget || 0);
+    state.repairs.forEach((repair) => {
+      repair.costType = repair.costType || "material";
+      repair.completedAt = repair.completedAt || "";
+      repair.dueDate = repair.dueDate || "";
+    });
+    return state;
+  }
   return {
     filter: "all",
+    monthlyBudget: 0,
     repairs: [
       {
         id: crypto.randomUUID(),
@@ -29,10 +45,12 @@ function loadState() {
         title: "水槽下方渗水",
         priority: "high",
         cost: 260,
+        costType: "material",
         status: "todo",
         photo: "",
         note: "先检查软管接口",
-        dueDate: ""
+        dueDate: "",
+        completedAt: ""
       }
     ]
   };
@@ -47,6 +65,9 @@ function render() {
   const unfinished = state.repairs.filter((repair) => repair.status !== "done");
   const totalCost = unfinished.reduce((total, repair) => total + Number(repair.cost || 0), 0);
   const doing = state.repairs.filter((repair) => repair.status === "doing").length;
+  const monthSpent = monthlySpending(state.repairs);
+  const budget = Number(state.monthlyBudget || 0);
+  const overBudget = budget > 0 && monthSpent > budget;
 
   app.innerHTML = `
     <main class="shell">
@@ -59,6 +80,18 @@ function render() {
           <div class="stat"><span>未完成</span><strong>${unfinished.length}</strong></div>
           <div class="stat"><span>处理中</span><strong>${doing}</strong></div>
           <div class="stat"><span>预计费用</span><strong>¥${totalCost}</strong></div>
+          <div class="stat budget ${overBudget ? "over" : ""}">
+            <form id="budget-form">
+              <label for="budget-input">本月预算上限</label>
+              <div class="budget-input">
+                <span>¥</span>
+                <input id="budget-input" name="budget" type="number" min="0" step="1" value="${budget || ""}" placeholder="未设置">
+                <button type="submit" class="budget-save">设置</button>
+              </div>
+            </form>
+            <p class="budget-spent">本月已花费 <strong>¥${monthSpent}</strong>${budget > 0 ? ` / ¥${budget}` : ""}</p>
+            ${overBudget ? `<p class="budget-alert">⚠ 已超出预算 ¥${monthSpent - budget}</p>` : budget > 0 ? `<p class="budget-ok">预算内，还可花费 ¥${budget - monthSpent}</p>` : `<p class="budget-ok">设置预算后自动提醒超限</p>`}
+          </div>
         </section>
       </header>
 
@@ -70,6 +103,7 @@ function render() {
             <label>问题描述<textarea name="title" required placeholder="例如门锁松动"></textarea></label>
             <label>优先级<select name="priority">${renderPriorityOptions("medium")}</select></label>
             <label>预计费用<input name="cost" type="number" min="0" step="1" value="0"></label>
+            <label>费用类型<select name="costType">${renderCostTypeOptions("material")}</select></label>
             <label>计划完成日期<input name="dueDate" type="date"></label>
             <label>处理状态<select name="status">${renderStatusOptions("todo")}</select></label>
             <label>照片链接<input name="photo" type="url" placeholder="可选，粘贴图片地址"></label>
@@ -106,7 +140,9 @@ function renderRepair(repair) {
         <p>${escapeHtml(repair.title)}</p>
         <div class="row">
           ${renderDueChip(repair)}
+          <span class="chip cost-type ${repair.costType || "material"}">${costTypes[repair.costType || "material"]}</span>
           <span class="chip">预计 ¥${Number(repair.cost || 0)}</span>
+          ${repair.status === "done" && repair.completedAt ? `<span class="chip done-date">完成于 ${formatDate(repair.completedAt)}</span>` : ""}
           <span class="chip">${escapeHtml(repair.note || "暂无备注")}</span>
         </div>
         <div class="actions">
@@ -131,6 +167,12 @@ function renderPriorityOptions(selected) {
     .join("");
 }
 
+function renderCostTypeOptions(selected) {
+  return Object.entries(costTypes)
+    .map(([value, label]) => `<option value="${value}" ${selected === value ? "selected" : ""}>${label}</option>`)
+    .join("");
+}
+
 function bindEvents() {
   document.querySelector("#repair-form").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -141,13 +183,24 @@ function bindEvents() {
       title: data.title.trim(),
       priority: data.priority,
       cost: Number(data.cost || 0),
+      costType: data.costType,
       dueDate: data.dueDate || "",
       status: data.status,
+      completedAt: data.status === "done" ? todayText() : "",
       photo: data.photo.trim(),
       note: data.note.trim()
     });
     saveState();
     render();
+  });
+
+  document.querySelector("#budget-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const data = new FormData(event.target).get("budget");
+    state.monthlyBudget = Math.max(0, Number(data || 0));
+    saveState();
+    render();
+    document.querySelector("#budget-input")?.focus();
   });
 
   document.querySelectorAll("[data-filter]").forEach((button) => {
@@ -162,6 +215,11 @@ function bindEvents() {
     select.addEventListener("change", () => {
       const repair = state.repairs.find((item) => item.id === select.dataset.status);
       repair.status = select.value;
+      if (repair.status === "done") {
+        if (!repair.completedAt) repair.completedAt = todayText();
+      } else {
+        repair.completedAt = "";
+      }
       saveState();
       render();
     });
@@ -198,6 +256,24 @@ function sortRepairs(list) {
       return a.index - b.index;
     })
     .map((entry) => entry.repair);
+}
+
+function todayText() {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${now.getFullYear()}-${month}-${day}`;
+}
+
+function currentMonthText() {
+  return todayText().slice(0, 7);
+}
+
+function monthlySpending(repairs) {
+  const month = currentMonthText();
+  return repairs
+    .filter((repair) => repair.status === "done" && (repair.completedAt || "").startsWith(month))
+    .reduce((total, repair) => total + Number(repair.cost || 0), 0);
 }
 
 function daysUntil(dateText) {

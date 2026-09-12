@@ -56,7 +56,7 @@ h1 {
 .stats {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(3, minmax(110px, 1fr));
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
 }
 
 .stat,
@@ -80,6 +80,80 @@ h1 {
 .stat strong {
   display: block;
   font-size: 1.65rem;
+}
+
+.budget {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+}
+
+.budget label {
+  color: #687166;
+  font-size: 0.82rem;
+}
+
+.budget-input {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.budget-input span {
+  color: #596257;
+  font-weight: 800;
+}
+
+.budget-input input {
+  min-height: 34px;
+  padding: 5px 8px;
+}
+
+.budget-save {
+  background: #526d4e;
+  border-radius: 6px;
+  color: white;
+  font-weight: 800;
+  min-height: 34px;
+  padding: 5px 12px;
+  white-space: nowrap;
+}
+
+.budget-spent {
+  color: #596257;
+  font-size: 0.86rem;
+  margin: 0;
+}
+
+.budget-spent strong {
+  display: inline;
+  font-size: 1.05rem;
+}
+
+.budget-alert {
+  background: #f6d8d2;
+  border-radius: 6px;
+  color: #9c2d1e;
+  font-size: 0.84rem;
+  font-weight: 800;
+  margin: 0;
+  padding: 5px 8px;
+}
+
+.budget-ok {
+  color: #687166;
+  font-size: 0.82rem;
+  margin: 0;
+}
+
+.stat.budget.over {
+  border-color: #c4513a;
+  box-shadow: inset 0 4px 0 #c4513a;
+}
+
+.stat.budget.over .budget-spent strong {
+  color: #9c2d1e;
 }
 
 .layout {
@@ -240,6 +314,26 @@ textarea {
   color: #9c2d1e;
 }
 
+.cost-type {
+  background: #e3e9f3;
+  color: #31506f;
+}
+
+.cost-type.labor {
+  background: #ece4f3;
+  color: #5a3a78;
+}
+
+.cost-type.other {
+  background: #ece9dd;
+  color: #6b6034;
+}
+
+.done-date {
+  background: #dcead9;
+  color: #3d6937;
+}
+
 .repair.overdue {
   border-color: #c4513a;
   box-shadow: inset 4px 0 0 #c4513a;
@@ -295,6 +389,10 @@ textarea {
   .layout {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .stats {
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 
